@@ -7,9 +7,12 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -59,6 +62,9 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var layoutParams: WindowManager.LayoutParams? = null
     private var feedbackLayoutParams: WindowManager.LayoutParams? = null
     private var audioRecord: AudioRecord? = null
+    private var bluetoothAudioManager: AudioManager? = null
+    private var previousAudioMode: Int? = null
+    private var bluetoothRoutePrepared = false
     private var pcmStream: ByteArrayOutputStream? = null
     private val handler = Handler(Looper.getMainLooper())
     private val hideFeedback = Runnable {
@@ -316,18 +322,50 @@ class WhisperAccessibilityService : AccessibilityService() {
             toast("Grant audio permission in Phone Whisper app"); return
         }
 
+        val selection = MicrophoneDevices.loadSelection(prefs())
+        val wantsBluetooth = MicrophoneDevices.isBluetoothSelection(selection)
+        if (wantsBluetooth) prepareBluetoothRoute(selection)
+
         val bufSize = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
+        val audioSource = if (wantsBluetooth) {
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        } else {
+            MediaRecorder.AudioSource.MIC
+        }
         audioRecord = try {
             AudioRecord(
-                MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
+                audioSource, SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize
             )
         } catch (_: SecurityException) { toast("Audio permission denied"); return }
+        val record = audioRecord!!
+
+        val preferredDevice = MicrophoneDevices.resolveSelectedDevice(this, selection)
+        if (!selection.isAuto && preferredDevice == null) {
+            Log.w(TAG, "Selected microphone unavailable: ${selection.name} type=${selection.type} address=${selection.address}")
+            toast("Selected mic unavailable; using default")
+        }
+        if (preferredDevice != null) {
+            val accepted = try {
+                record.setPreferredDevice(preferredDevice)
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Selected microphone was rejected", e)
+                false
+            }
+            Log.i(TAG, "Requested microphone ${describeDevice(preferredDevice)} accepted=$accepted")
+            if (!accepted) toast("Selected mic not accepted; using default")
+        } else {
+            Log.i(TAG, "Using Android default microphone routing")
+        }
 
         pcmStream = ByteArrayOutputStream()
-        audioRecord!!.startRecording()
+        record.startRecording()
+        Log.i(
+            TAG,
+            "Recording started preferred=${describeDevice(record.preferredDevice)} routed=${describeDevice(record.routedDevice)}"
+        )
         state = State.RECORDING
         setBusy(false)
         setAppearance(COLOR_RECORDING)
@@ -342,6 +380,62 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun prepareBluetoothRoute(selection: MicrophoneDevices.SavedSelection) {
+        val audio = getSystemService(AUDIO_SERVICE) as AudioManager
+        bluetoothAudioManager = audio
+        previousAudioMode = audio.mode
+        audio.mode = AudioManager.MODE_IN_COMMUNICATION
+
+        val communicationDevice = MicrophoneDevices.resolveCommunicationDevice(this, selection)
+        if (communicationDevice == null) {
+            Log.w(TAG, "No Bluetooth communication route available for ${selection.name}")
+            return
+        }
+
+        bluetoothRoutePrepared = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val accepted = audio.setCommunicationDevice(communicationDevice)
+            Log.i(TAG, "Requested Bluetooth communication route ${describeDevice(communicationDevice)} accepted=$accepted")
+            accepted
+        } else {
+            @Suppress("DEPRECATION")
+            audio.startBluetoothSco()
+            @Suppress("DEPRECATION")
+            audio.isBluetoothScoOn = true
+            Log.i(TAG, "Requested legacy Bluetooth SCO route ${describeDevice(communicationDevice)}")
+            true
+        }
+    }
+
+    private fun releaseBluetoothRoute() {
+        val audio = bluetoothAudioManager ?: return
+        if (bluetoothRoutePrepared) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audio.clearCommunicationDevice()
+            } else {
+                @Suppress("DEPRECATION")
+                audio.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                audio.isBluetoothScoOn = false
+            }
+        }
+        previousAudioMode?.let { audio.mode = it }
+        bluetoothAudioManager = null
+        previousAudioMode = null
+        bluetoothRoutePrepared = false
+    }
+
+    private fun describeDevice(device: AudioDeviceInfo?): String =
+        if (device == null) {
+            "none"
+        } else {
+            val name = try {
+                device.productName?.toString().orEmpty()
+            } catch (_: SecurityException) {
+                ""
+            }
+            "type=${device.type} name=${name.ifBlank { "unknown" }}"
+        }
+
     private fun stopAndTranscribe() {
         state = State.TRANSCRIBING
         stopPulse()
@@ -351,6 +445,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+        releaseBluetoothRoute()
 
         val pcm = pcmStream?.toByteArray() ?: ByteArray(0)
         pcmStream = null

@@ -4,11 +4,10 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
-import android.graphics.Color
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -28,6 +27,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var audioRowSub: TextView
     private lateinit var accRowSub: TextView
     private lateinit var keyRowSub: TextView
+    private lateinit var micRowSub: TextView
     private lateinit var promptRowSub: TextView
     private lateinit var promptRow: LinearLayout
     private lateinit var modelContainer: LinearLayout
@@ -138,6 +138,10 @@ class MainActivity : AppCompatActivity() {
         keyRowSub = keyRow.findViewWithTag("subtitle")
         root.addView(keyRow)
 
+        val micRow = settingsRow("Microphone Selection", "Auto") { promptMicrophoneSelection() }
+        micRowSub = micRow.findViewWithTag("subtitle")
+        root.addView(micRow)
+
         setContentView(ScrollView(this).apply {
             setBackgroundColor(attrColor(android.R.attr.colorBackground))
             addView(root)
@@ -152,7 +156,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() { super.onResume(); refresh() }
     override fun onRequestPermissionsResult(c: Int, p: Array<String>, r: IntArray) {
-        super.onRequestPermissionsResult(c, p, r); refresh()
+        super.onRequestPermissionsResult(c, p, r)
+        refresh()
+        if (c == REQ_BLUETOOTH_CONNECT && r.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            showMicrophoneSelectionDialog()
+        }
     }
 
     // --- Model Rows ---
@@ -323,6 +331,8 @@ class MainActivity : AppCompatActivity() {
                          else if (apiKey.length > 7) "sk-...${apiKey.takeLast(4)}" 
                          else "sk-...***"
 
+        micRowSub.text = MicrophoneDevices.subtitle(MicrophoneDevices.loadSelection(prefs()))
+
         val prompt = currentPrompt()
         promptRowSub.text = prompt
 
@@ -359,6 +369,47 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun promptMicrophoneSelection() {
+        if (MicrophoneDevices.needsBluetoothConnectPermission(this)) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Nearby devices permission")
+                .setMessage("Grant Nearby devices permission to show connected Bluetooth microphones. Phone and wired microphones can be selected without it.")
+                .setPositiveButton("Grant") { _, _ -> requestBluetoothConnectPermission() }
+                .setNegativeButton("Show phone mic") { _, _ -> showMicrophoneSelectionDialog() }
+                .show()
+            return
+        }
+
+        showMicrophoneSelectionDialog()
+    }
+
+    private fun showMicrophoneSelectionDialog() {
+        val options = MicrophoneDevices.selectorOptions(this)
+        val labels = options.map { it.dialogLabel }.toTypedArray()
+        val current = MicrophoneDevices.loadSelection(prefs())
+        val checked = MicrophoneDevices.selectedOptionIndex(current, options)
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Microphone Selection")
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                MicrophoneDevices.saveSelection(prefs(), options[which])
+                refresh()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun requestBluetoothConnectPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.BLUETOOTH_CONNECT),
+                REQ_BLUETOOTH_CONNECT
+            )
+        }
     }
 
     private fun promptPostProcessing() {
@@ -485,5 +536,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val LP_MATCH = LinearLayout.LayoutParams.MATCH_PARENT
         private const val LP_WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
+        private const val REQ_BLUETOOTH_CONNECT = 2
     }
 }

@@ -1,7 +1,7 @@
 .gradle/
+.gradle-local/
 build/
 .kotlin/
 local.properties
 .env
 *.apk
-app/src/main/jniLibs/
