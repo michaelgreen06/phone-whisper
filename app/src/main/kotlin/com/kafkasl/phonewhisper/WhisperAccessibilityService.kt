@@ -12,12 +12,14 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -82,6 +84,8 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        enableKeyEventFiltering()
+        ArmedHeadsetService.start(this)
         showOverlay()
         // Try to load local model in background
         thread { initLocalModel() }
@@ -89,6 +93,13 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
+
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        if (HeadsetButtonDispatcher.isSupportedMediaButton(event.keyCode)) {
+            return HeadsetButtonDispatcher.dispatch("accessibility", event)
+        }
+        return super.onKeyEvent(event)
+    }
 
     override fun onDestroy() {
         instance = null
@@ -113,6 +124,13 @@ class WhisperAccessibilityService : AccessibilityService() {
         } else {
             Log.i(TAG, "No local model found, will use API")
         }
+    }
+
+    private fun enableKeyEventFiltering() {
+        serviceInfo = serviceInfo.apply {
+            flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+        }
+        Log.i(TAG, "Accessibility key event filtering enabled")
     }
 
     /** Reload local model (called from MainActivity when settings change) */
@@ -179,7 +197,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 MotionEvent.ACTION_UP -> {
                     val moved = abs(ev.rawX - touchX) + abs(ev.rawY - touchY)
                     if (moved < TAP_THRESHOLD_DP * dp) {
-                        onTap()
+                        handleCaptureToggle(CaptureSource.Overlay)
                     } else {
                         params.x = if (params.x + ringSize / 2 > screenW / 2)
                             screenW - ringSize - margin else margin
@@ -308,12 +326,35 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     // --- State machine ---
 
-    private fun onTap() {
+    fun handleCaptureToggle(source: CaptureSource) {
         when (state) {
             State.IDLE -> startRecording()
             State.RECORDING -> stopAndTranscribe()
-            State.TRANSCRIBING -> {}
+            State.TRANSCRIBING -> Log.i(TAG, "Ignoring capture toggle while transcribing source=$source")
         }
+    }
+
+    fun isRecording(): Boolean = state == State.RECORDING
+
+    fun isCaptureIdle(): Boolean = state == State.IDLE
+
+    fun cancelRecording(source: CaptureSource) {
+        if (state != State.RECORDING) {
+            Log.i(TAG, "Ignoring capture cancel while state=$state source=$source")
+            return
+        }
+
+        state = State.IDLE
+        stopPulse()
+        audioRecord?.stop()
+        audioRecord?.release()
+        audioRecord = null
+        releaseBluetoothRoute()
+        pcmStream = null
+        setBusy(false)
+        setAppearance(COLOR_IDLE)
+        ArmedHeadsetService.showIdle()
+        toast("Recording canceled")
     }
 
     private fun startRecording() {
@@ -369,6 +410,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         state = State.RECORDING
         setBusy(false)
         setAppearance(COLOR_RECORDING)
+        ArmedHeadsetService.showRecording()
         startPulse()
 
         thread {
@@ -441,6 +483,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         stopPulse()
         setAppearance(COLOR_BUSY)
         setBusy(true)
+        ArmedHeadsetService.showTranscribing()
 
         audioRecord?.stop()
         audioRecord?.release()
@@ -486,6 +529,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     state = State.IDLE
                     setBusy(false)
                     setAppearance(COLOR_IDLE)
+                    ArmedHeadsetService.showIdle()
                 }
             }
         }
@@ -505,6 +549,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     state = State.IDLE
                     setBusy(false)
                     setAppearance(COLOR_IDLE)
+                    ArmedHeadsetService.showIdle()
                 }
             }
         }
@@ -517,6 +562,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 state = State.IDLE
                 setBusy(false)
                 setAppearance(COLOR_IDLE)
+                ArmedHeadsetService.showIdle()
             }
             return
         }
@@ -532,6 +578,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     state = State.IDLE
                     setBusy(false)
                     setAppearance(COLOR_IDLE)
+                    ArmedHeadsetService.showIdle()
                 }
                 return
             }
@@ -548,6 +595,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     state = State.IDLE
                     setBusy(false)
                     setAppearance(COLOR_IDLE)
+                    ArmedHeadsetService.showIdle()
                 }
             }
         } else {
@@ -556,6 +604,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 state = State.IDLE
                 setBusy(false)
                 setAppearance(COLOR_IDLE)
+                ArmedHeadsetService.showIdle()
             }
         }
     }
@@ -565,6 +614,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         state = State.IDLE
         setBusy(false)
         setAppearance(COLOR_IDLE)
+        ArmedHeadsetService.showIdle()
     }
 
     // --- Text injection ---

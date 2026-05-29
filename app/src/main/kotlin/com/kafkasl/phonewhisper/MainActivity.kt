@@ -25,6 +25,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusSubtitle: TextView
     private lateinit var audioRowSub: TextView
+    private lateinit var notificationRowSub: TextView
     private lateinit var accRowSub: TextView
     private lateinit var keyRowSub: TextView
     private lateinit var micRowSub: TextView
@@ -71,11 +72,17 @@ class MainActivity : AppCompatActivity() {
         
         val audioRow = settingsRow("Audio permission", "Checking...") {
             if (!hasPerm(Manifest.permission.RECORD_AUDIO)) {
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
             }
         }
         audioRowSub = audioRow.findViewWithTag("subtitle")
         root.addView(audioRow)
+
+        val notificationRow = settingsRow("Notifications", "Checking...") {
+            requestNotificationPermission()
+        }
+        notificationRowSub = notificationRow.findViewWithTag("subtitle")
+        root.addView(notificationRow)
 
         val accRow = settingsRow("Accessibility service", "Checking...") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -148,8 +155,11 @@ class MainActivity : AppCompatActivity() {
         })
 
         if (!hasPerm(Manifest.permission.RECORD_AUDIO)) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
+        } else {
+            requestNotificationPermission()
         }
+        ArmedHeadsetService.start(this)
         
         refresh()
     }
@@ -160,6 +170,8 @@ class MainActivity : AppCompatActivity() {
         refresh()
         if (c == REQ_BLUETOOTH_CONNECT && r.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             showMicrophoneSelectionDialog()
+        } else if (c == REQ_AUDIO) {
+            requestNotificationPermission()
         }
     }
 
@@ -313,6 +325,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         val audio = hasPerm(Manifest.permission.RECORD_AUDIO)
+        val notifications = hasNotificationPermission()
         val acc = WhisperAccessibilityService.instance != null
         val useLocal = prefs().getBoolean("use_local", true)
         val usePostProcessing = prefs().getBoolean("use_post_processing", false)
@@ -320,6 +333,7 @@ class MainActivity : AppCompatActivity() {
         val hasModel = LocalTranscriber.availableModels(this).isNotEmpty()
 
         audioRowSub.text = if (audio) "Granted" else "Tap to grant permission"
+        notificationRowSub.text = if (notifications) "Granted" else "Tap to show armed service notification"
         accRowSub.text = if (acc) "Enabled" else "Tap to enable in settings"
 
         modelContainer.visibility = if (useLocal) View.VISIBLE else View.GONE
@@ -348,7 +362,7 @@ class MainActivity : AppCompatActivity() {
         val postReady = !usePostProcessing || hasKey
         val ready = audio && acc && (localReady || cloudReady) && postReady
 
-        statusSubtitle.text = if (ready) "Ready — tap the overlay dot to dictate" else "Setup required"
+        statusSubtitle.text = if (ready) "Ready — tap the overlay dot or headset button to dictate" else "Setup required"
         statusSubtitle.setTextColor(if (ready) attrColor(com.google.android.material.R.attr.colorPrimary) else attrColor(android.R.attr.textColorSecondary))
         
         refreshAllCards()
@@ -408,6 +422,17 @@ class MainActivity : AppCompatActivity() {
                 this,
                 arrayOf(Manifest.permission.BLUETOOTH_CONNECT),
                 REQ_BLUETOOTH_CONNECT
+            )
+        }
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !hasPerm(Manifest.permission.POST_NOTIFICATIONS)) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                REQ_POST_NOTIFICATIONS
             )
         }
     }
@@ -524,6 +549,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
     private fun hasPerm(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
+    private fun hasNotificationPermission() =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            hasPerm(Manifest.permission.POST_NOTIFICATIONS)
+
     private fun attrColor(attr: Int): Int {
         val ta = obtainStyledAttributes(intArrayOf(attr))
         val color = ta.getColor(0, 0)
@@ -536,6 +565,8 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val LP_MATCH = LinearLayout.LayoutParams.MATCH_PARENT
         private const val LP_WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
+        private const val REQ_AUDIO = 1
         private const val REQ_BLUETOOTH_CONNECT = 2
+        private const val REQ_POST_NOTIFICATIONS = 3
     }
 }

@@ -42,6 +42,8 @@ git clone https://github.com/kafkasl/phone-whisper.git && cd phone-whisper
 make build
 ```
 
+Use the `make` targets instead of raw `./gradlew ...`. The repo is set up to build with JDK 17, and plain Gradle invocations may fail on machines whose default `java` is newer.
+
 APK output:
 
 ```bash
@@ -119,6 +121,7 @@ The app downloads and extracts models directly from the sherpa-onnx release arch
 make build       # build debug APK
 make test        # run unit tests
 make adb-install # build + install via ADB
+make adb-reinstall # build + install + launch via ADB
 make clean       # clean build artifacts
 ```
 
