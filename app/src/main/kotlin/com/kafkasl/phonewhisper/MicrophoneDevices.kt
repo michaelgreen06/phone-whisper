@@ -137,6 +137,26 @@ object MicrophoneDevices {
             }
     }
 
+    fun resolveCommunicationDevice(context: Context, selection: SavedSelection): AudioDeviceInfo? {
+        if (!isBluetoothSelection(selection) || !canUseBluetoothDevices(context)) return null
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val devices = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audio.availableCommunicationDevices
+        } else {
+            audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).filter { it.isSink }
+        }
+
+        return devices.firstOrNull { device ->
+            isBluetoothType(device.type) &&
+                selection.address.isNotBlank() &&
+                device.address.orEmpty() == selection.address
+        } ?: devices.firstOrNull { device ->
+            isBluetoothType(device.type) &&
+                selection.name.isNotBlank() &&
+                device.productName?.toString() == selection.name
+        } ?: devices.firstOrNull { isBluetoothType(it.type) }
+    }
+
     fun matchSelectedDevice(selection: SavedSelection, devices: List<DeviceDescriptor>): DeviceDescriptor? {
         if (selection.isAuto) return null
         val type = selection.type ?: return null
@@ -153,6 +173,9 @@ object MicrophoneDevices {
 
     fun needsBluetoothConnectPermission(context: Context): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !canUseBluetoothDevices(context)
+
+    fun isBluetoothSelection(selection: SavedSelection): Boolean =
+        !selection.isAuto && selection.type?.let(::isBluetoothType) == true
 
     private fun deviceOption(device: DeviceDescriptor): DeviceOption {
         val title = typeLabel(device.type, device.name)
@@ -209,7 +232,7 @@ object MicrophoneDevices {
             type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
             type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
 
-    private fun isBluetoothType(type: Int): Boolean =
+    fun isBluetoothType(type: Int): Boolean =
         type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
             type == AudioDeviceInfo.TYPE_BLE_HEADSET
 
