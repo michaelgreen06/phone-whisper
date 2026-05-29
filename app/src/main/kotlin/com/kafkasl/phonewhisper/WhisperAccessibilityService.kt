@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -325,9 +326,33 @@ class WhisperAccessibilityService : AccessibilityService() {
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize
             )
         } catch (_: SecurityException) { toast("Audio permission denied"); return }
+        val record = audioRecord!!
+
+        val selection = MicrophoneDevices.loadSelection(prefs())
+        val preferredDevice = MicrophoneDevices.resolveSelectedDevice(this, selection)
+        if (!selection.isAuto && preferredDevice == null) {
+            Log.w(TAG, "Selected microphone unavailable: ${selection.name} type=${selection.type} address=${selection.address}")
+            toast("Selected mic unavailable; using default")
+        }
+        if (preferredDevice != null) {
+            val accepted = try {
+                record.setPreferredDevice(preferredDevice)
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Selected microphone was rejected", e)
+                false
+            }
+            Log.i(TAG, "Requested microphone ${describeDevice(preferredDevice)} accepted=$accepted")
+            if (!accepted) toast("Selected mic not accepted; using default")
+        } else {
+            Log.i(TAG, "Using Android default microphone routing")
+        }
 
         pcmStream = ByteArrayOutputStream()
-        audioRecord!!.startRecording()
+        record.startRecording()
+        Log.i(
+            TAG,
+            "Recording started preferred=${describeDevice(record.preferredDevice)} routed=${describeDevice(record.routedDevice)}"
+        )
         state = State.RECORDING
         setBusy(false)
         setAppearance(COLOR_RECORDING)
@@ -341,6 +366,18 @@ class WhisperAccessibilityService : AccessibilityService() {
             }
         }
     }
+
+    private fun describeDevice(device: AudioDeviceInfo?): String =
+        if (device == null) {
+            "none"
+        } else {
+            val name = try {
+                device.productName?.toString().orEmpty()
+            } catch (_: SecurityException) {
+                ""
+            }
+            "type=${device.type} name=${name.ifBlank { "unknown" }}"
+        }
 
     private fun stopAndTranscribe() {
         state = State.TRANSCRIBING
