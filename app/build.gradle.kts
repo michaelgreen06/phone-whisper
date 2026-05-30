@@ -3,9 +3,21 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+fun configValue(name: String): String =
+    providers.gradleProperty(name)
+        .orElse(providers.environmentVariable(name))
+        .getOrElse("")
+
+fun String.asBuildConfigString(): String =
+    "\"" + replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
 android {
     namespace = "com.kafkasl.phonewhisper"
     compileSdk = 34
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         applicationId = "com.kafkasl.phonewhisper"
@@ -15,6 +27,17 @@ android {
         versionName = "0.3.0"
 
         ndk { abiFilters += "arm64-v8a" }
+
+        val backendUrl = configValue("PHONE_WHISPER_BACKEND_URL").trim()
+        val backendToken = configValue("PHONE_WHISPER_BACKEND_TOKEN").trim()
+        val backendUploadRequested = configValue("PHONE_WHISPER_BACKEND_UPLOAD_ENABLED")
+            .ifBlank { "true" }
+            .toBooleanStrictOrNull() ?: false
+        val backendUploadEnabled = backendUploadRequested && backendUrl.isNotBlank() && backendToken.isNotBlank()
+
+        buildConfigField("String", "BACKEND_BASE_URL", backendUrl.asBuildConfigString())
+        buildConfigField("String", "BACKEND_API_TOKEN", backendToken.asBuildConfigString())
+        buildConfigField("boolean", "BACKEND_UPLOAD_ENABLED", backendUploadEnabled.toString())
     }
 
     compileOptions {

@@ -16,8 +16,15 @@ export ANDROID_HOME
 export ANDROID_SDK_ROOT := $(ANDROID_HOME)
 export GRADLE_USER_HOME := $(CURDIR)/.gradle-local
 export PATH := $(JAVA_HOME)/bin:$(PATH)
+export PHONE_WHISPER_BACKEND_URL
+export PHONE_WHISPER_BACKEND_TOKEN
+export PHONE_WHISPER_BACKEND_UPLOAD_ENABLED
 
-.PHONY: build test install adb-install adb-devices adb-start adb-logcat adb-logcat-clear adb-reinstall push-model clean
+PHONE_WHISPER_BACKEND_LOCAL_URL ?= http://127.0.0.1:3001
+PHONE_WHISPER_BACKEND_LOCAL_TOKEN ?= change-me
+PHONE_WHISPER_BACKEND_LOCAL_UPLOAD_ENABLED ?= true
+
+.PHONY: build test install adb-install adb-devices adb-start adb-logcat adb-logcat-clear adb-reinstall adb-backend-reverse adb-reinstall-backend push-model clean
 
 build:
 	./gradlew assembleDebug
@@ -48,6 +55,17 @@ adb-logcat-clear:
 
 adb-reinstall: adb-install adb-start
 	@echo "Installed and launched via ADB"
+
+adb-backend-reverse:
+	$(ADB) reverse tcp:3001 tcp:3001
+	$(ADB) reverse --list
+
+adb-reinstall-backend: adb-backend-reverse
+	PHONE_WHISPER_BACKEND_URL=$(PHONE_WHISPER_BACKEND_LOCAL_URL) \
+	PHONE_WHISPER_BACKEND_TOKEN=$(PHONE_WHISPER_BACKEND_LOCAL_TOKEN) \
+	PHONE_WHISPER_BACKEND_UPLOAD_ENABLED=$(PHONE_WHISPER_BACKEND_LOCAL_UPLOAD_ENABLED) \
+	$(MAKE) adb-reinstall
+	@echo "Installed with local backend config via ADB reverse"
 
 ## Push a model to the phone's internal storage (usage: make push-model MODEL=/path/to/model-dir)
 push-model:

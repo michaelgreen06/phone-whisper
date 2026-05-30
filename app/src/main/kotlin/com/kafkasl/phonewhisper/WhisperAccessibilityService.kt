@@ -30,7 +30,9 @@ import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.time.Instant
 import kotlin.concurrent.thread
 import kotlin.math.abs
 
@@ -521,7 +523,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 val ms = System.currentTimeMillis() - t0
                 Log.i(TAG, "Local transcription: ${ms}ms, ${samples.size / SAMPLE_RATE}s audio")
 
-                handleTranscriptionResult(text)
+                handleTranscriptionResult(text, transcriptionEngine = "local")
             } catch (e: Exception) {
                 Log.e(TAG, "Local transcription failed", e)
                 handler.post {
@@ -542,7 +544,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         TranscriberClient.transcribe(wav, apiKey) { result ->
             if (result.text != null && result.text.isNotBlank()) {
-                handleTranscriptionResult(result.text)
+                handleTranscriptionResult(result.text, transcriptionEngine = "openai")
             } else {
                 handler.post {
                     toast("Error: ${result.error ?: "empty transcript"}")
@@ -555,7 +557,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun handleTranscriptionResult(text: String?) {
+    private fun handleTranscriptionResult(text: String?, transcriptionEngine: String) {
         if (text.isNullOrBlank()) {
             handler.post {
                 toast("No speech detected")
@@ -574,7 +576,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             if (apiKey.isBlank()) {
                 handler.post {
                     toast("Post-processing needs API key. Using raw text.")
-                    injectText(text)
+                    injectText(text, transcriptionEngine = transcriptionEngine)
                     state = State.IDLE
                     setBusy(false)
                     setAppearance(COLOR_IDLE)
@@ -588,9 +590,14 @@ class WhisperAccessibilityService : AccessibilityService() {
             PostProcessor.process(text, prompt, apiKey) { result ->
                 handler.post {
                     if (result.text != null && result.text.isNotBlank()) {
-                        injectText(result.text)
+                        injectText(result.text, transcriptionEngine = transcriptionEngine)
                     } else {
-                        injectText(text, feedback = "Cleanup failed — raw copied to clipboard", feedbackDurationMs = 3000)
+                        injectText(
+                            text,
+                            feedback = "Cleanup failed — raw copied to clipboard",
+                            feedbackDurationMs = 3000,
+                            transcriptionEngine = transcriptionEngine,
+                        )
                     }
                     state = State.IDLE
                     setBusy(false)
@@ -600,7 +607,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             }
         } else {
             handler.post {
-                injectText(text)
+                injectText(text, transcriptionEngine = transcriptionEngine)
                 state = State.IDLE
                 setBusy(false)
                 setAppearance(COLOR_IDLE)
@@ -622,7 +629,8 @@ class WhisperAccessibilityService : AccessibilityService() {
     private fun injectText(
         text: String,
         feedback: String? = "Copied to clipboard",
-        feedbackDurationMs: Long = 2000
+        feedbackDurationMs: Long = 2000,
+        transcriptionEngine: String,
     ) {
         val clip = ClipData.newPlainText("phonewhisper", text)
         (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
@@ -644,6 +652,41 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         Log.i(TAG, if (injected) "Text injection action reported success" else "No injection action succeeded; clipboard fallback only")
+        enqueueBackendUpload(text, transcriptionEngine)
+    }
+
+    private fun enqueueBackendUpload(text: String, transcriptionEngine: String) {
+        val trimmedText = text.trim()
+        if (trimmedText.isBlank()) return
+
+        val metadata = JSONObject().apply {
+            put("platform", "android")
+            put("app_version", BuildConfig.VERSION_NAME)
+            put("android_sdk", Build.VERSION.SDK_INT)
+            put("transcription_engine", transcriptionEngine)
+        }
+
+        BackendTranscriptClient.enqueueUpload(
+            text = trimmedText,
+            capturedAt = Instant.now().toString(),
+            metadata = metadata,
+            config = BackendTranscriptClient.Config(
+                baseUrl = BuildConfig.BACKEND_BASE_URL,
+                apiToken = BuildConfig.BACKEND_API_TOKEN,
+                enabled = BuildConfig.BACKEND_UPLOAD_ENABLED,
+            ),
+            logger = { message -> Log.w(TAG, "Backend transcript upload: $message") },
+        ) { result ->
+            when (result.status) {
+                BackendTranscriptClient.Status.SUCCESS ->
+                    Log.i(TAG, "Backend transcript upload persisted")
+                BackendTranscriptClient.Status.ERROR ->
+                    Log.w(TAG, "Backend transcript upload failed: ${result.error ?: "unknown error"}")
+                BackendTranscriptClient.Status.DISABLED,
+                BackendTranscriptClient.Status.SKIPPED,
+                BackendTranscriptClient.Status.ENQUEUED -> Unit
+            }
+        }
     }
 
     private fun findInjectionCandidates(): List<AccessibilityNodeInfo> {
