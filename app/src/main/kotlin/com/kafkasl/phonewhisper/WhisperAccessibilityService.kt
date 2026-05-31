@@ -330,8 +330,14 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     fun handleCaptureToggle(source: CaptureSource) {
         when (state) {
-            State.IDLE -> startRecording()
-            State.RECORDING -> stopAndTranscribe()
+            State.IDLE -> {
+                Log.i(TAG, "Starting capture source=$source")
+                startRecording()
+            }
+            State.RECORDING -> {
+                Log.i(TAG, "Stopping capture for transcription source=$source")
+                stopAndTranscribe()
+            }
             State.TRANSCRIBING -> Log.i(TAG, "Ignoring capture toggle while transcribing source=$source")
         }
     }

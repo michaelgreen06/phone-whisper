@@ -33,7 +33,7 @@ class ArmedHeadsetService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var mediaSession: MediaSession? = null
-    private var notificationText = TEXT_IDLE
+    private var notificationMode = NotificationMode.IDLE
     private var audioFocusRequest: AudioFocusRequest? = null
     private var silentTrack: AudioTrack? = null
     private var lastObservedMusicVolume = -1
@@ -59,7 +59,7 @@ class ArmedHeadsetService : Service() {
         Log.i(TAG, "ArmedHeadsetService created")
         instance = this
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification(notificationText))
+        startForeground(NOTIFICATION_ID, buildNotification(notificationMode))
         createMediaSession()
         registerLegacyMediaButtonReceiver()
         registerHeadsetAudioReceiver()
@@ -71,10 +71,14 @@ class ArmedHeadsetService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        intent?.takeIf { it.action == Intent.ACTION_MEDIA_BUTTON }
-            ?.keyEventExtra()
-            ?.let { handleMediaButton(it) }
-        updateNotification(notificationText)
+        when (intent?.action) {
+            Intent.ACTION_MEDIA_BUTTON -> {
+                intent.keyEventExtra()?.let { handleMediaButton(it) }
+            }
+            ACTION_STOP_AND_TRANSCRIBE -> handleStopAndTranscribeAction()
+            ACTION_CANCEL_RECORDING -> handleCancelRecordingAction()
+        }
+        updateNotification(notificationMode)
         return START_STICKY
     }
 
@@ -355,29 +359,89 @@ class ArmedHeadsetService : Service() {
         notificationManager().createNotificationChannel(channel)
     }
 
-    private fun updateNotification(text: String) {
-        notificationText = text
-        notificationManager().notify(NOTIFICATION_ID, buildNotification(text))
+    private fun updateNotification(mode: NotificationMode) {
+        notificationMode = mode
+        notificationManager().notify(NOTIFICATION_ID, buildNotification(mode))
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(mode: NotificationMode): Notification {
         val openAppIntent = PendingIntent.getActivity(
             this,
-            0,
+            OPEN_APP_REQUEST_CODE,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return Notification.Builder(this, CHANNEL_ID)
+        val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_mic)
             .setContentTitle("Phone Whisper armed")
-            .setContentText(text)
+            .setContentText(mode.text)
             .setContentIntent(openAppIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .build()
+
+        if (mode == NotificationMode.RECORDING) {
+            builder
+                .addAction(
+                    Notification.Action.Builder(
+                        null,
+                        "Stop and transcribe",
+                        buildServiceActionIntent(
+                            requestCode = STOP_RECORDING_REQUEST_CODE,
+                            action = ACTION_STOP_AND_TRANSCRIBE
+                        )
+                    ).build()
+                )
+                .addAction(
+                    Notification.Action.Builder(
+                        null,
+                        "Cancel recording",
+                        buildServiceActionIntent(
+                            requestCode = CANCEL_RECORDING_REQUEST_CODE,
+                            action = ACTION_CANCEL_RECORDING
+                        )
+                    ).build()
+                )
+        }
+
+        return builder.build()
+    }
+
+    private fun buildServiceActionIntent(requestCode: Int, action: String): PendingIntent =
+        PendingIntent.getService(
+            this,
+            requestCode,
+            Intent(this, ArmedHeadsetService::class.java).setAction(action),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    private fun handleStopAndTranscribeAction() {
+        val service = WhisperAccessibilityService.instance
+        if (service == null) {
+            Log.w(TAG, "Notification stop ignored because accessibility service is inactive")
+            return
+        }
+        if (!service.isRecording()) {
+            Log.i(TAG, "Notification stop ignored because capture is not recording")
+            return
+        }
+
+        suppressVolumeStartsBriefly()
+        Log.i(TAG, "Notification stop source=notification")
+        service.handleCaptureToggle(CaptureSource.Notification)
+    }
+
+    private fun handleCancelRecordingAction() {
+        val service = WhisperAccessibilityService.instance
+        if (service == null) {
+            Log.w(TAG, "Notification cancel ignored because accessibility service is inactive")
+            return
+        }
+
+        Log.i(TAG, "Notification cancel source=notification")
+        service.cancelRecording(CaptureSource.Notification)
     }
 
     private fun buildMediaButtonIntent(): PendingIntent =
@@ -405,12 +469,16 @@ class ArmedHeadsetService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val MEDIA_SESSION_TAG = "PhoneWhisperHeadset"
         private const val MEDIA_BUTTON_REQUEST_CODE = 1002
+        private const val OPEN_APP_REQUEST_CODE = 1003
+        private const val STOP_RECORDING_REQUEST_CODE = 1004
+        private const val CANCEL_RECORDING_REQUEST_CODE = 1005
+        private const val ACTION_STOP_AND_TRANSCRIBE =
+            "com.kafkasl.phonewhisper.action.STOP_AND_TRANSCRIBE"
+        private const val ACTION_CANCEL_RECORDING =
+            "com.kafkasl.phonewhisper.action.CANCEL_RECORDING"
         private const val HEADSET_AUDIO_STOP_DEBOUNCE_MS = 1000L
         private const val VOLUME_TOGGLE_DEBOUNCE_MS = 700L
         private const val VOLUME_START_SUPPRESS_AFTER_STOP_MS = 2500L
-        private const val TEXT_IDLE = "Headset button ready. Mic off."
-        private const val TEXT_RECORDING = "Recording... press again to stop"
-        private const val TEXT_TRANSCRIBING = "Transcribing..."
 
         @Volatile
         private var instance: ArmedHeadsetService? = null
@@ -427,19 +495,25 @@ class ArmedHeadsetService : Service() {
         }
 
         fun showIdle() {
-            instance?.updateNotification(TEXT_IDLE)
+            instance?.updateNotification(NotificationMode.IDLE)
         }
 
         fun showRecording() {
-            instance?.updateNotification(TEXT_RECORDING)
+            instance?.updateNotification(NotificationMode.RECORDING)
         }
 
         fun showTranscribing() {
-            instance?.updateNotification(TEXT_TRANSCRIBING)
+            instance?.updateNotification(NotificationMode.TRANSCRIBING)
         }
 
         fun suppressVolumeStartsBriefly() {
             instance?.suppressVolumeStartsFor(VOLUME_START_SUPPRESS_AFTER_STOP_MS)
         }
+    }
+
+    private enum class NotificationMode(val text: String) {
+        IDLE("Headset button ready. Mic off."),
+        RECORDING("Recording... press again to stop"),
+        TRANSCRIBING("Transcribing...")
     }
 }
