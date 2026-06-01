@@ -17,6 +17,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
@@ -54,6 +57,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val COLOR_BUSY = 0xDD6B6B6B.toInt()
         private const val COLOR_FEEDBACK_BG = 0xEE1C1C1E.toInt()
         private const val COLOR_RING = 0xFFE8EAED.toInt()
+        private val RECORDING_START_VIBRATION_TIMINGS = longArrayOf(0, 250, 100, 250)
+        private val RECORDING_STOP_VIBRATION_TIMINGS = longArrayOf(0, 250, 100, 250, 100, 250)
     }
 
     private enum class State { IDLE, RECORDING, TRANSCRIBING }
@@ -327,6 +332,20 @@ class WhisperAccessibilityService : AccessibilityService() {
         button?.alpha = 1f
     }
 
+    private fun vibrateWaveform(timings: LongArray) {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val manager = getSystemService(VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            manager?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(VIBRATOR_SERVICE) as? Vibrator
+        } ?: return
+
+        if (!vibrator.hasVibrator()) return
+
+        vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
+    }
+
     // --- State machine ---
 
     fun handleCaptureToggle(source: CaptureSource) {
@@ -411,11 +430,31 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         pcmStream = ByteArrayOutputStream()
-        record.startRecording()
+        try {
+            record.startRecording()
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "Failed to start recording", e)
+            audioRecord?.release()
+            audioRecord = null
+            releaseBluetoothRoute()
+            pcmStream = null
+            toast("Failed to start recording")
+            return
+        }
+        if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            Log.e(TAG, "AudioRecord did not enter recording state")
+            audioRecord?.release()
+            audioRecord = null
+            releaseBluetoothRoute()
+            pcmStream = null
+            toast("Failed to start recording")
+            return
+        }
         Log.i(
             TAG,
             "Recording started preferred=${describeDevice(record.preferredDevice)} routed=${describeDevice(record.routedDevice)}"
         )
+        vibrateWaveform(RECORDING_START_VIBRATION_TIMINGS)
         state = State.RECORDING
         setBusy(false)
         setAppearance(COLOR_RECORDING)
@@ -489,6 +528,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun stopAndTranscribe() {
         state = State.TRANSCRIBING
+        vibrateWaveform(RECORDING_STOP_VIBRATION_TIMINGS)
         stopPulse()
         setAppearance(COLOR_BUSY)
         setBusy(true)
