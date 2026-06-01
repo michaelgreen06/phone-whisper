@@ -8,6 +8,7 @@ import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -51,6 +52,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        flushPendingBackendUploads()
 
         val root = vertical(0, 0)
 
@@ -165,6 +167,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onResume() { super.onResume(); refresh() }
+
+    private fun flushPendingBackendUploads() {
+        BackendTranscriptClient.flush(
+            filesDir = filesDir,
+            config = BackendTranscriptClient.Config(
+                baseUrl = BuildConfig.BACKEND_BASE_URL,
+                apiToken = BuildConfig.BACKEND_API_TOKEN,
+                enabled = BuildConfig.BACKEND_UPLOAD_ENABLED,
+            ),
+            logger = { message -> Log.w("PhoneWhisper", "Backend transcript upload: $message") },
+        )
+    }
+
     override fun onRequestPermissionsResult(c: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r)
         refresh()

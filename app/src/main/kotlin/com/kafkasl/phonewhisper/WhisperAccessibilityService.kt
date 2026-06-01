@@ -89,6 +89,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         enableKeyEventFiltering()
         ArmedHeadsetService.start(this)
         showOverlay()
+        flushPendingBackendUploads()
         // Try to load local model in background
         thread { initLocalModel() }
     }
@@ -672,7 +673,8 @@ class WhisperAccessibilityService : AccessibilityService() {
             put("transcription_engine", transcriptionEngine)
         }
 
-        BackendTranscriptClient.enqueueUpload(
+        BackendTranscriptClient.enqueueAndFlush(
+            filesDir = filesDir,
             text = trimmedText,
             capturedAt = Instant.now().toString(),
             metadata = metadata,
@@ -685,7 +687,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         ) { result ->
             when (result.status) {
                 BackendTranscriptClient.Status.SUCCESS ->
-                    Log.i(TAG, "Backend transcript upload persisted")
+                    Log.i(TAG, "Backend transcript outbox flushed")
                 BackendTranscriptClient.Status.ERROR ->
                     Log.w(TAG, "Backend transcript upload failed: ${result.error ?: "unknown error"}")
                 BackendTranscriptClient.Status.DISABLED,
@@ -693,6 +695,18 @@ class WhisperAccessibilityService : AccessibilityService() {
                 BackendTranscriptClient.Status.ENQUEUED -> Unit
             }
         }
+    }
+
+    private fun flushPendingBackendUploads() {
+        BackendTranscriptClient.flush(
+            filesDir = filesDir,
+            config = BackendTranscriptClient.Config(
+                baseUrl = BuildConfig.BACKEND_BASE_URL,
+                apiToken = BuildConfig.BACKEND_API_TOKEN,
+                enabled = BuildConfig.BACKEND_UPLOAD_ENABLED,
+            ),
+            logger = { message -> Log.w(TAG, "Backend transcript upload: $message") },
+        )
     }
 
     private fun findInjectionCandidates(): List<AccessibilityNodeInfo> {

@@ -20,11 +20,10 @@ export PHONE_WHISPER_BACKEND_URL
 export PHONE_WHISPER_BACKEND_TOKEN
 export PHONE_WHISPER_BACKEND_UPLOAD_ENABLED
 
-PHONE_WHISPER_BACKEND_LOCAL_URL ?= http://127.0.0.1:3001
-PHONE_WHISPER_BACKEND_LOCAL_TOKEN ?= change-me
+PHONE_WHISPER_BACKEND_LOCAL_URL ?= http://127.0.0.1:3000
 PHONE_WHISPER_BACKEND_LOCAL_UPLOAD_ENABLED ?= true
 
-.PHONY: build test install adb-install adb-devices adb-start adb-logcat adb-logcat-clear adb-reinstall adb-backend-reverse adb-reinstall-backend push-model clean
+.PHONY: build test install adb-install adb-devices adb-start adb-logcat adb-logcat-clear adb-reinstall check-backend-token adb-backend-reverse adb-reinstall-backend push-model clean
 
 build:
 	./gradlew assembleDebug
@@ -56,13 +55,15 @@ adb-logcat-clear:
 adb-reinstall: adb-install adb-start
 	@echo "Installed and launched via ADB"
 
+check-backend-token:
+	@test -n "$(PHONE_WHISPER_BACKEND_TOKEN)" || (echo "Set PHONE_WHISPER_BACKEND_TOKEN to a provisioned raw token in .env" && exit 1)
+
 adb-backend-reverse:
-	$(ADB) reverse tcp:3001 tcp:3001
+	$(ADB) reverse tcp:3000 tcp:3000
 	$(ADB) reverse --list
 
-adb-reinstall-backend: adb-backend-reverse
+adb-reinstall-backend: check-backend-token adb-backend-reverse
 	PHONE_WHISPER_BACKEND_URL=$(PHONE_WHISPER_BACKEND_LOCAL_URL) \
-	PHONE_WHISPER_BACKEND_TOKEN=$(PHONE_WHISPER_BACKEND_LOCAL_TOKEN) \
 	PHONE_WHISPER_BACKEND_UPLOAD_ENABLED=$(PHONE_WHISPER_BACKEND_LOCAL_UPLOAD_ENABLED) \
 	$(MAKE) adb-reinstall
 	@echo "Installed with local backend config via ADB reverse"

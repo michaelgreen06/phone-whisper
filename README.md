@@ -125,6 +125,32 @@ make adb-reinstall # build + install + launch via ADB
 make clean       # clean build artifacts
 ```
 
+### Local todo ingestion backend
+
+Completed transcripts are persisted before upload under:
+
+```bash
+/data/data/com.kafkasl.phonewhisper/files/pending_transcript_uploads/
+```
+
+For local backend development, provision a raw ingestion token and put it in the ignored
+phone `.env` file:
+
+```bash
+PHONE_WHISPER_BACKEND_TOKEN=<provisioned-raw-token>
+```
+
+Then install with the localhost workflow:
+
+```bash
+make adb-reinstall-backend
+```
+
+This configures `adb reverse tcp:3000 tcp:3000` and builds the debug app against
+`http://127.0.0.1:3000`. The debug manifest allows cleartext traffic for this local
+workflow. Pending captures are retried when the app launches, when the accessibility
+service connects, and after later transcripts.
+
 ## App compatibility
 
 Phone Whisper works best in apps that use standard Android text fields.
