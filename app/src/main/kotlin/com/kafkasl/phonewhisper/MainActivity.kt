@@ -162,8 +162,14 @@ class MainActivity : AppCompatActivity() {
             requestNotificationPermission()
         }
         ArmedHeadsetService.start(this)
-        
+        handleEntryIntent(intent)
         refresh()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleEntryIntent(intent)
     }
 
     override fun onResume() { super.onResume(); refresh() }
@@ -382,6 +388,25 @@ class MainActivity : AppCompatActivity() {
         
         refreshAllCards()
         refreshPromptRows()
+    }
+
+    private fun handleEntryIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VOICE_COMMAND) return
+
+        val service = WhisperAccessibilityService.instance
+        if (service == null) {
+            toast("Enable accessibility service before using headset voice command")
+            Log.w("PhoneWhisper", "Voice command ignored because accessibility service is inactive")
+            return
+        }
+
+        if (!service.isCaptureIdle()) {
+            Log.i("PhoneWhisper", "Voice command ignored because capture state is not idle")
+            return
+        }
+
+        Log.i("PhoneWhisper", "Voice command launching capture")
+        service.handleCaptureToggle(CaptureSource.VoiceCommand)
     }
 
     private fun promptApiKey() {
