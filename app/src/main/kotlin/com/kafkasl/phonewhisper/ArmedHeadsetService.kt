@@ -12,7 +12,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.database.ContentObserver
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
@@ -24,7 +23,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
@@ -36,16 +34,8 @@ class ArmedHeadsetService : Service() {
     private var notificationMode = NotificationMode.IDLE
     private var audioFocusRequest: AudioFocusRequest? = null
     private var silentTrack: AudioTrack? = null
-    private var lastObservedMusicVolume = -1
     private var lastHeadsetAudioStopMs = 0L
-    private var lastVolumeToggleMs = 0L
-    private var suppressVolumeStartsUntilMs = 0L
     private var headsetAudioReceiverRegistered = false
-    private val volumeObserver = object : ContentObserver(mainHandler) {
-        override fun onChange(selfChange: Boolean) {
-            handleMusicVolumeChanged("content-observer")
-        }
-    }
     private val headsetAudioReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED) {
@@ -63,11 +53,7 @@ class ArmedHeadsetService : Service() {
         createMediaSession()
         registerLegacyMediaButtonReceiver()
         registerHeadsetAudioReceiver()
-        registerVolumeObserver()
         requestMediaButtonAudioFocus()
-        handleMusicVolumeChanged("service-created")
-        // Volume button experiment: keep silent playback disabled while testing observer viability.
-        // startSilentPlaybackKeepalive()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -87,7 +73,6 @@ class ArmedHeadsetService : Service() {
     override fun onDestroy() {
         stopSilentPlaybackKeepalive()
         abandonMediaButtonAudioFocus()
-        unregisterVolumeObserver()
         unregisterHeadsetAudioReceiver()
         unregisterLegacyMediaButtonReceiver()
         mediaSession?.release()
@@ -249,80 +234,6 @@ class ArmedHeadsetService : Service() {
         headsetAudioReceiverRegistered = false
     }
 
-    private fun registerVolumeObserver() {
-        contentResolver.registerContentObserver(
-            Settings.System.CONTENT_URI,
-            true,
-            volumeObserver
-        )
-    }
-
-    private fun unregisterVolumeObserver() {
-        contentResolver.unregisterContentObserver(volumeObserver)
-    }
-
-    private fun handleMusicVolumeChanged(source: String) {
-        val audio = getSystemService(AUDIO_SERVICE) as AudioManager
-        val volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-
-        val previous = lastObservedMusicVolume
-        if (source == "service-created" || previous < 0) {
-            lastObservedMusicVolume = volume
-            Log.i(TAG, "Volume observer source=$source stream=MUSIC old=$previous new=$volume max=$max")
-            return
-        }
-
-        if (volume == previous) return
-
-        val direction = if (volume > previous) "up" else "down"
-        Log.i(TAG, "Volume observer source=$source stream=MUSIC direction=$direction old=$previous new=$volume max=$max")
-
-        if (volume <= previous) {
-            lastObservedMusicVolume = volume
-            Log.i(TAG, "Volume button ignored direction=$direction")
-            return
-        }
-
-        lastObservedMusicVolume = volume
-        handleVolumeUpToggle()
-    }
-
-    private fun handleVolumeUpToggle() {
-        val now = System.currentTimeMillis()
-        if (now - lastVolumeToggleMs < VOLUME_TOGGLE_DEBOUNCE_MS) {
-            Log.i(TAG, "Volume up toggle ignored by debounce")
-            return
-        }
-
-        val service = WhisperAccessibilityService.instance
-        if (service == null) {
-            Log.i(TAG, "Volume up toggle ignored because accessibility service is inactive")
-            return
-        }
-
-        if (now < suppressVolumeStartsUntilMs) {
-            Log.i(TAG, "Volume up start ignored while volume starts are suppressed")
-            return
-        }
-
-        if (!service.isCaptureIdle()) {
-            Log.i(TAG, "Volume up start ignored because capture is not idle")
-            return
-        }
-
-        lastVolumeToggleMs = now
-        Log.i(TAG, "Volume up start source=headset")
-        service.handleCaptureToggle(CaptureSource.Headset)
-    }
-
-    private fun suppressVolumeStartsFor(durationMs: Long) {
-        suppressVolumeStartsUntilMs = maxOf(
-            suppressVolumeStartsUntilMs,
-            System.currentTimeMillis() + durationMs
-        )
-    }
-
     private fun handleMediaButton(event: KeyEvent): Boolean {
         return HeadsetButtonDispatcher.dispatch("media-session", event)
     }
@@ -342,7 +253,6 @@ class ArmedHeadsetService : Service() {
         if (now - lastHeadsetAudioStopMs < HEADSET_AUDIO_STOP_DEBOUNCE_MS) return
         lastHeadsetAudioStopMs = now
 
-        suppressVolumeStartsFor(VOLUME_START_SUPPRESS_AFTER_STOP_MS)
         Log.i(TAG, "Headset audio button inferred stop previous=$previous current=$current")
         service.handleCaptureToggle(CaptureSource.Headset)
     }
@@ -428,7 +338,6 @@ class ArmedHeadsetService : Service() {
             return
         }
 
-        suppressVolumeStartsBriefly()
         Log.i(TAG, "Notification stop source=notification")
         service.handleCaptureToggle(CaptureSource.Notification)
     }
@@ -477,8 +386,6 @@ class ArmedHeadsetService : Service() {
         private const val ACTION_CANCEL_RECORDING =
             "com.kafkasl.phonewhisper.action.CANCEL_RECORDING"
         private const val HEADSET_AUDIO_STOP_DEBOUNCE_MS = 1000L
-        private const val VOLUME_TOGGLE_DEBOUNCE_MS = 700L
-        private const val VOLUME_START_SUPPRESS_AFTER_STOP_MS = 2500L
 
         @Volatile
         private var instance: ArmedHeadsetService? = null
@@ -504,10 +411,6 @@ class ArmedHeadsetService : Service() {
 
         fun showTranscribing() {
             instance?.updateNotification(NotificationMode.TRANSCRIBING)
-        }
-
-        fun suppressVolumeStartsBriefly() {
-            instance?.suppressVolumeStartsFor(VOLUME_START_SUPPRESS_AFTER_STOP_MS)
         }
     }
 

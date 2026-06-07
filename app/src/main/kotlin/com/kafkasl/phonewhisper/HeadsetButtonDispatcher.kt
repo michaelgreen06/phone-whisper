@@ -56,7 +56,6 @@ object HeadsetButtonDispatcher {
             return
         }
 
-        ArmedHeadsetService.suppressVolumeStartsBriefly()
         Log.i(TAG, "Headset media button stopping recording")
         service.handleCaptureToggle(CaptureSource.Headset)
     }
